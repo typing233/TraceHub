@@ -23,23 +23,65 @@ class Content {
   static findAllByUserId(userId, options = {}) {
     const { content_type, limit = 50, offset = 0, search } = options;
     
-    let query = 'SELECT * FROM contents WHERE user_id = ?';
-    const params = [userId];
+    if (!search || search.trim().length < 2) {
+      let query = 'SELECT * FROM contents WHERE user_id = ?';
+      const params = [userId];
+      
+      if (content_type) {
+        query += ' AND content_type = ?';
+        params.push(content_type);
+      }
+      
+      query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+      params.push(limit, offset);
+      
+      return db.prepare(query).all(...params);
+    }
+    
+    const searchQuery = search.trim();
+    
+    try {
+      let ftsQuery = 'SELECT * FROM contents WHERE user_id = ?';
+      const ftsParams = [userId];
+      
+      if (content_type) {
+        ftsQuery += ' AND content_type = ?';
+        ftsParams.push(content_type);
+      }
+      
+      ftsQuery += ' AND id IN (SELECT rowid FROM contents_fts WHERE contents_fts MATCH ?)';
+      ftsParams.push(searchQuery);
+      
+      ftsQuery += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+      ftsParams.push(limit, offset);
+      
+      const ftsResults = db.prepare(ftsQuery).all(...ftsParams);
+      
+      if (ftsResults.length > 0) {
+        return ftsResults;
+      }
+      
+      console.log('内容列表 FTS 搜索返回空结果，尝试 LIKE 查询');
+    } catch (error) {
+      console.warn('内容列表 FTS 搜索失败，回退到 LIKE 查询:', error.message);
+    }
+    
+    let likeQuery = 'SELECT * FROM contents WHERE user_id = ?';
+    const likeParams = [userId];
     
     if (content_type) {
-      query += ' AND content_type = ?';
-      params.push(content_type);
+      likeQuery += ' AND content_type = ?';
+      likeParams.push(content_type);
     }
     
-    if (search && search.trim().length >= 2) {
-      query += ' AND id IN (SELECT rowid FROM contents_fts WHERE contents_fts MATCH ?)';
-      params.push(search.trim());
-    }
+    const likeSearch = `%${searchQuery}%`;
+    likeQuery += ' AND (title LIKE ? OR extracted_text LIKE ? OR summary LIKE ? OR tags LIKE ?)';
+    likeParams.push(likeSearch, likeSearch, likeSearch, likeSearch);
     
-    query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
+    likeQuery += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    likeParams.push(limit, offset);
     
-    return db.prepare(query).all(...params);
+    return db.prepare(likeQuery).all(...likeParams);
   }
 
   static search(userId, query, options = {}) {
@@ -52,7 +94,7 @@ class Content {
     const searchQuery = query.trim();
     
     try {
-      const results = db.prepare(`
+      const ftsResults = db.prepare(`
         SELECT c.*
         FROM contents c
         WHERE c.user_id = ? AND c.id IN (
@@ -62,18 +104,23 @@ class Content {
         LIMIT ? OFFSET ?
       `).all(userId, searchQuery, limit, offset);
       
-      return results;
+      if (ftsResults.length > 0) {
+        return ftsResults;
+      }
+      
+      console.log('FTS 搜索返回空结果，尝试 LIKE 查询（中文支持更好）');
     } catch (error) {
       console.warn('FTS 搜索失败，回退到普通搜索:', error.message);
-      const likeQuery = `%${searchQuery}%`;
-      return db.prepare(`
-        SELECT * FROM contents 
-        WHERE user_id = ? 
-        AND (title LIKE ? OR extracted_text LIKE ? OR summary LIKE ? OR tags LIKE ?)
-        ORDER BY created_at DESC
-        LIMIT ? OFFSET ?
-      `).all(userId, likeQuery, likeQuery, likeQuery, likeQuery, limit, offset);
     }
+    
+    const likeQuery = `%${searchQuery}%`;
+    return db.prepare(`
+      SELECT * FROM contents 
+      WHERE user_id = ? 
+      AND (title LIKE ? OR extracted_text LIKE ? OR summary LIKE ? OR tags LIKE ?)
+      ORDER BY created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(userId, likeQuery, likeQuery, likeQuery, likeQuery, limit, offset);
   }
 
   static update(userId, id, data) {
