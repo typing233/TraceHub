@@ -40,6 +40,22 @@ body {
   display: block;
 }
 
+.page-section {
+  display: none;
+}
+
+.page-section.active {
+  display: block;
+}
+
+.add-tab-panel {
+  display: none;
+}
+
+.add-tab-panel.active {
+  display: block;
+}
+
 .hidden {
   display: none !important;
 }
